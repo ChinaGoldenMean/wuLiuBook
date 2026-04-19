@@ -43,6 +43,23 @@ body{font-family:'Noto Serif SC','STSong','宋体',serif;background:var(--paper)
 .sidebar-search input{width:100%;padding:6px 12px;background:var(--paper);border:1px solid var(--border);border-radius:3px;font-family:'Noto Serif SC',serif;font-size:12px;color:var(--ink);outline:none;transition:border-color .2s}
 .sidebar-search input:focus{border-color:var(--accent-gold)}
 .sidebar-search input::placeholder{color:var(--ink-muted)}
+/* SEARCH DROPDOWN */
+.search-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--paper);border:1px solid var(--accent-gold);border-top:none;border-radius:0 0 4px 4px;max-height:320px;overflow-y:auto;z-index:200;display:none;box-shadow:var(--shadow)}
+.search-dropdown.active{display:block}
+.search-result{padding:9px 14px;cursor:pointer;border-bottom:1px solid var(--border-light);transition:background .15s}
+.search-result:last-child{border-bottom:none}
+.search-result:hover{background:var(--paper-deep)}
+.search-result-title{font-size:13px;color:var(--accent);letter-spacing:1px;margin-bottom:2px}
+.search-result-book{font-size:10px;color:var(--ink-muted);letter-spacing:1px;font-family:'Noto Sans SC',sans-serif}
+.search-result-snippet{font-size:11px;color:var(--ink-light);margin-top:3px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.search-result-snippet mark{background:rgba(184,137,42,.25);color:var(--accent-gold);border-radius:2px}
+.search-no-result{padding:12px 14px;text-align:center;font-size:12px;color:var(--ink-muted);letter-spacing:1px}
+.content-body mark.search-hl{background:rgba(184,137,42,.35);color:var(--accent-gold);border-radius:2px;padding:0 2px}
+.sidebar-search{position:relative}
+/* LOGIN BUTTON */
+.topnav-login{margin-left:auto;display:flex;align-items:center;padding:0 16px;border-left:1px solid rgba(255,255,255,.07)}
+.wx-login-btn{background:rgba(212,168,67,.15);border:1px solid rgba(212,168,67,.4);color:var(--gold);font-size:12px;letter-spacing:1px;padding:6px 14px;border-radius:3px;cursor:pointer;font-family:'Noto Sans SC',sans-serif;transition:all .2s}
+.wx-login-btn:hover{background:rgba(212,168,67,.25);border-color:var(--gold)}
 .sidebar-toc{flex:1;overflow-y:auto;padding:8px 0}
 .sidebar-toc::-webkit-scrollbar{width:4px}
 .sidebar-toc::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
@@ -129,6 +146,7 @@ var _hmt = _hmt || [];
   </button>
  
   <div class="topnav-books" id="bookTabs"></div>
+  <div class="topnav-login" id="topnavLogin"></div>
 </nav>
 <div class="reading-progress"><div class="reading-progress-bar" id="progressBar"></div></div>
 <div class="main-layout">
@@ -138,7 +156,8 @@ var _hmt = _hmt || [];
       <div class="sidebar-book-author" id="sidebarAuthor"></div>
     </div>
     <div class="sidebar-search">
-      <input type="text" id="searchInput" placeholder="搜索章节…" oninput="filterToc(this.value)">
+      <input type="text" id="searchInput" placeholder="搜索正文…" autocomplete="off">
+      <div class="search-dropdown" id="searchDropdown"></div>
     </div>
     <div class="sidebar-toc" id="tocList"></div>
   </aside>
@@ -221,12 +240,82 @@ function filterToc(val){
   if(!currentBookId)return;
   buildToc(BOOKS.find(b=>b.id===currentBookId),val);
 }
+// ── FULL-TEXT SEARCH (backend API) ──
+let _searchTimer=null;
+async function searchBackend(keyword){
+  if(keyword.length<2){closeSearchDropdown();return;}
+  try{
+    const resp=await fetch(`/api/search/fulltext?q=${encodeURIComponent(keyword)}&limit=8`);
+    if(!resp.ok)return;
+    const results=await resp.json();
+    renderSearchDropdown(results,keyword);
+  }catch(e){}
+}
+function renderSearchDropdown(results,keyword){
+  const dd=document.getElementById('searchDropdown');
+  if(results.length===0){
+    dd.innerHTML='<div class="search-no-result">未找到相关章节</div>';
+    dd.classList.add('active');
+    return;
+  }
+  dd.innerHTML=results.map(r=>`
+    <div class="search-result" onclick="window._pendingHl='${keyword}';jumpToChapter('${r.chapter_id}','${r.book_id}')">
+      <div class="search-result-title">${r.title}</div>
+      <div class="search-result-book">${r.book_id==='tianxian'?'天仙正理':r.book_id==='xianfo'?'仙佛合宗':r.book_id==='jinxian'?'金仙证论':'慧命经'}</div>
+      ${r.snippet?`<div class="search-result-snippet">${r.snippet}</div>`:''}
+    </div>
+  `).join('');
+  dd.classList.add('active');
+}
+function closeSearchDropdown(){
+  document.getElementById('searchDropdown').classList.remove('active');
+}
+function jumpToChapter(chapterId,bookId){
+  const kw=window._pendingHl||'';window._pendingHl='';
+  window._searchKw=kw;
+  closeSearchDropdown();
+  document.getElementById('searchInput').value='';
+  if(bookId!==currentBookId){
+    currentBookId=bookId;
+    const book=BOOKS.find(b=>b.id===bookId);if(!book)return;
+    document.querySelectorAll('.book-tab').forEach(t=>t.classList.toggle('active',t.dataset.bookId===bookId));
+    document.getElementById('sidebarTitle').textContent=book.title;
+    document.getElementById('sidebarAuthor').textContent=book.author+' \u300e\u64cd';
+    const el=document.getElementById('tocList');el.innerHTML='';
+    book.chapters.forEach((ch,idx)=>{
+      const item=document.createElement('div');
+      item.className='toc-item';
+      item.dataset.chapterId=ch.id;
+      item.innerHTML='<span class="toc-num">'+String(idx+1).padStart(2,'0')+'</span><span>'+ch.title+'</span>';
+      item.onclick=()=>loadChapter(ch.id);el.appendChild(item);
+    });
+    setTimeout(()=>loadChapter(chapterId),80);
+  }else{
+    loadChapter(chapterId);
+  }
+}
+function initSearch(){
+  const input=document.getElementById('searchInput');
+  input.addEventListener('input',function(){
+    const v=this.value.trim();
+    clearTimeout(_searchTimer);
+    if(!v){closeSearchDropdown();filterToc('');return;}
+    _searchTimer=setTimeout(()=>searchBackend(v),300);
+  });
+  input.addEventListener('focus',function(){
+    if(this.value.trim().length>=2){
+      searchBackend(this.value.trim());
+    }
+  });
+  document.addEventListener('click',function(e){
+    if(!e.target.closest('.sidebar-search')){
+      closeSearchDropdown();
+    }
+  });
+}
 function loadChapter(chapterId){
   const chapter=chapterMap[chapterId];if(!chapter)return;
   currentChapterId=chapterId;
-  document.querySelectorAll('.toc-item').forEach(i=>i.classList.toggle('active',i.dataset.chapterId===chapterId));
-  const active=document.querySelector('.toc-item.active');
-  if(active)active.scrollIntoView({block:'nearest',behavior:'smooth'});
   const book=BOOKS.find(b=>b.id===chapter.bookId);
   const idx=book.chapters.findIndex(c=>c.id===chapterId);
   const prev=idx>0?book.chapters[idx-1]:null;
@@ -235,17 +324,33 @@ function loadChapter(chapterId){
   nav+=prev?`<div class="chapter-nav-btn prev" onclick="loadChapter('${prev.id}')"><div class="nav-hint">◀ 上一篇</div><div class="nav-title">${prev.title}</div></div>`:'<div></div>';
   nav+=next?`<div class="chapter-nav-btn next" onclick="loadChapter('${next.id}')"><div class="nav-hint">下一篇 ▶</div><div class="nav-title">${next.title}</div></div>`:'<div></div>';
   nav+='</div>';
-  document.getElementById('contentInner').innerHTML=`
-    <div class="chapter-header">
-      <div class="chapter-breadcrumb">${chapter.bookTitle}<span>›</span>${chapter.title}</div>
-      <div class="chapter-title">${chapter.title}</div>
-    </div>
-    <div class="content-body">${chapter.content}</div>
-    ${nav}`;
-  document.getElementById('contentArea').scrollTo({top:0,behavior:'smooth'});
+  document.getElementById('contentInner').innerHTML=`<div class="chapter-header"><div class="chapter-breadcrumb">${chapter.bookTitle}<span>›</span>${chapter.title}</div><div class="chapter-title">${chapter.title}</div></div><div class="content-body" id="contentBody">${chapter.content}</div>${nav}`;
+  document.getElementById('contentArea').scrollTop=0;
   document.getElementById('progressBar').style.width='0%';
-}
-function updateProgress(){
+  if(window._searchKw){
+    const kw=window._searchKw;
+    window._searchKw='';
+    const bd=document.getElementById('contentBody');
+    if(!bd)return;
+    const tw=document.createTreeWalker(bd,NodeFilter.SHOW_TEXT);
+    let n;
+    while((n=tw.nextNode())){
+      const i=n.textContent.indexOf(kw);
+      if(i<0)continue;
+      const range=document.createRange();
+      range.setStart(n,i);range.setEnd(n,i+kw.length);
+      const rect=range.getBoundingClientRect();
+      const ca=document.getElementById('contentArea');
+      ca.scrollTop=Math.max(0,rect.top-(ca.offsetTop||0)-Math.floor(ca.clientHeight/3));
+      const hl=document.createElement('mark');
+      hl.className='search-hl';hl.textContent=kw;
+      const after=document.createTextNode(n.textContent.slice(i+kw.length));
+      n.textContent=n.textContent.slice(0,i);
+      n.after(hl,after);
+      break;
+    }
+  }
+}function updateProgress(){
   const a=document.getElementById('contentArea');
   const t=a.scrollHeight-a.clientHeight;
   document.getElementById('progressBar').style.width=(t>0?a.scrollTop/t*100:0)+'%';
@@ -258,7 +363,7 @@ document.addEventListener('keydown',e=>{
   if((e.key==='ArrowRight'||e.key==='ArrowDown')&&idx<book.chapters.length-1)loadChapter(book.chapters[idx+1].id);
   else if((e.key==='ArrowLeft'||e.key==='ArrowUp')&&idx>0)loadChapter(book.chapters[idx-1].id);
 });
-buildTabs();buildWelcome();
+buildTabs();buildWelcome();initSearch();
 </script><!-- 不蒜子访问量统计 -->
  
 </body>
